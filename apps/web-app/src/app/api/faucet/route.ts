@@ -11,25 +11,18 @@ import {
 import {
   getFaucetTokens,
   buildMintRequestsScVal,
-  FAUCET_COOLDOWN_MS,
 } from "@/lib/constants/faucet";
 import { parseJsonBody } from "@/lib/validation/parse";
 import { FaucetBodySchema } from "@/lib/validation/schemas";
 import { clientEnv } from "@/lib/env.client";
 import { serverEnv } from "@/lib/env.server";
 import { getSorobanServer } from "@/lib/helpers/stellar/sorobanServer";
+import {
+  acquireFaucetRateLimit,
+  releaseFaucetRateLimit,
+} from "@/lib/faucetRateLimit";
 
 export const dynamic = "force-dynamic";
-
-const rateLimitMap = new Map<string, number>();
-
-function checkRateLimit(address: string): boolean {
-  const lastMint = rateLimitMap.get(address);
-  if (lastMint && Date.now() - lastMint < FAUCET_COOLDOWN_MS) {
-    return false;
-  }
-  return true;
-}
 
 async function bulkMint(
   adminKeypair: Keypair,
@@ -140,6 +133,9 @@ async function mintTokenLegacy(
 }
 
 export async function POST(request: NextRequest) {
+  let rateLimitAcquired = false;
+  let rateLimitAddress: string | undefined;
+
   try {
     const network = clientEnv.stellarNetwork;
     if (network === "PUBLIC") {
@@ -161,18 +157,17 @@ export async function POST(request: NextRequest) {
     if ("error" in parsed) return parsed.error;
     const { address } = parsed.data;
 
-    if (!checkRateLimit(address)) {
-      const remaining = Math.ceil(
-        (FAUCET_COOLDOWN_MS - (Date.now() - (rateLimitMap.get(address) ?? 0))) /
-          1000
-      );
+    const limit = await acquireFaucetRateLimit(address);
+    if (!limit.allowed) {
       return NextResponse.json(
         {
-          error: `Rate limit: please wait ${remaining}s before requesting again`,
+          error: `Rate limit: please wait ${limit.retryAfterSeconds}s before requesting again`,
         },
         { status: 429 }
       );
     }
+    rateLimitAcquired = true;
+    rateLimitAddress = address;
 
     const { rpcUrl, horizonUrl, networkPassphrase: passphrase } = clientEnv;
 
@@ -193,7 +188,6 @@ export async function POST(request: NextRequest) {
       );
 
       const tokens = getFaucetTokens();
-      rateLimitMap.set(address, Date.now());
 
       return NextResponse.json({
         success: true,
@@ -235,16 +229,27 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    rateLimitMap.set(address, Date.now());
-
     const allSucceeded = results.every((r) => r.success);
     const noneSucceeded = results.every((r) => !r.success);
+
+    // Failed mints should not burn the cooldown slot.
+    if (noneSucceeded) {
+      await releaseFaucetRateLimit(address);
+      rateLimitAcquired = false;
+    }
 
     return NextResponse.json(
       { results, success: allSucceeded },
       { status: noneSucceeded ? 500 : 200 }
     );
   } catch (error) {
+    if (rateLimitAcquired && rateLimitAddress) {
+      try {
+        await releaseFaucetRateLimit(rateLimitAddress);
+      } catch {
+        // Best-effort release; surface the original mint error below.
+      }
+    }
     return NextResponse.json(
       {
         error: "Faucet request failed",

@@ -382,6 +382,14 @@ NEXT_PUBLIC_VERBOSE_LOGGING=false       # "true" | "false"
 VAULT_MANAGER_SECRET_KEY=
 FAUCET_SECRET_KEY=
 FAUCET_CONTRACT_ID=
+# Durable faucet rate limit (Upstash Redis / Vercel KV). Optional locally —
+# without these, /api/faucet uses an in-memory Map + warn. Set
+# FAUCET_RATE_LIMIT_DISABLED=true to skip limiting in local tooling.
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+# KV_REST_API_URL=
+# KV_REST_API_TOKEN=
+# FAUCET_RATE_LIMIT_DISABLED=false
 ETHERFUSE_API_KEY=
 ETHERFUSE_BASE_URL=https://api.sand.etherfuse.com
 ALFREDPAY_API_KEY=

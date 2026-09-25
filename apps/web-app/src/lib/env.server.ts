@@ -37,6 +37,15 @@ const serverSchema = z.object({
   // Faucet (server-only)
   FAUCET_SECRET_KEY: z.string().optional(),
   FAUCET_CONTRACT_ID: z.string().optional(),
+  // Durable faucet rate limit (Upstash Redis / Vercel KV). When unset, the
+  // route falls back to an in-memory Map with a console.warn. See
+  // lib/faucetRateLimit.ts. FAUCET_RATE_LIMIT_DISABLED=true skips limiting.
+  // Empty strings are treated as unset (local .env.example placeholders).
+  UPSTASH_REDIS_REST_URL: z.string().optional(),
+  UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+  KV_REST_API_URL: z.string().optional(),
+  KV_REST_API_TOKEN: z.string().optional(),
+  FAUCET_RATE_LIMIT_DISABLED: z.string().optional(),
 
   // Etherfuse anchor
   ETHERFUSE_API_KEY: z.string().optional(),
@@ -57,6 +66,11 @@ const parsed = serverSchema.safeParse({
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
   FAUCET_SECRET_KEY: process.env.FAUCET_SECRET_KEY,
   FAUCET_CONTRACT_ID: process.env.FAUCET_CONTRACT_ID,
+  UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
+  UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+  KV_REST_API_URL: process.env.KV_REST_API_URL,
+  KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN,
+  FAUCET_RATE_LIMIT_DISABLED: process.env.FAUCET_RATE_LIMIT_DISABLED,
   ETHERFUSE_API_KEY: process.env.ETHERFUSE_API_KEY,
   ETHERFUSE_BASE_URL: process.env.ETHERFUSE_BASE_URL,
   ALFREDPAY_API_KEY: process.env.ALFREDPAY_API_KEY,
