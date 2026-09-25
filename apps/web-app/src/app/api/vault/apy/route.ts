@@ -12,6 +12,9 @@ import { Client as DefindexVaultClient } from "@neko/defindex-vault";
 import { clientEnv } from "@/lib/env.client";
 import { serverEnv } from "@/lib/env.server";
 import { getSorobanServer } from "@/lib/helpers/stellar/sorobanServer";
+import { errorResponse } from "@/lib/observability";
+
+const ROUTE = "/api/vault/apy";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -222,9 +225,6 @@ export async function GET() {
           : undefined,
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
-      { status: 500 }
-    );
+    return errorResponse(err, { req: null, route: ROUTE, status: 500 });
   }
 }
