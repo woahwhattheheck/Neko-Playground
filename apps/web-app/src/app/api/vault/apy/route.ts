@@ -150,7 +150,7 @@ async function getAllocations(
 
 // ─── GET /api/vault/apy ───────────────────────────────────────────────────────
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const secretKey = serverEnv.VAULT_MANAGER_SECRET_KEY;
     if (!secretKey) {
@@ -225,6 +225,6 @@ export async function GET() {
           : undefined,
     });
   } catch (err) {
-    return errorResponse(err, { req: null, route: ROUTE, status: 500 });
+    return errorResponse(err, { req: request, route: ROUTE, status: 500 });
   }
 }

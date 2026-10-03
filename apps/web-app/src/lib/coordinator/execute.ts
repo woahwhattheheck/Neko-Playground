@@ -2,8 +2,8 @@ import { nanoid } from "nanoid";
 import type { CoordinatorLedgerStore } from "./ledger";
 import { DelegationScopeViolationError } from "./types";
 import type { TrancheSelection } from "./delegation";
-import type {
 import { logger } from "@/lib/observability";
+import type {
   CoordinatorRun,
   CoordinatorStepRecord,
   DelegationGrant,

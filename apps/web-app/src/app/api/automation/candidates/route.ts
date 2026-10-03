@@ -64,11 +64,11 @@ function buildMockCandidates(): VenueCandidate[] {
   return raw.map((r) => ({ ...r, netApyBps: calcNetApyBps(r) }));
 }
 
-export async function GET(_req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
     const candidates = buildMockCandidates();
     return NextResponse.json(candidates);
   } catch (err) {
-    return errorResponse(err, { req: null, route: ROUTE, status: 500 });
+    return errorResponse(err, { req, route: ROUTE, status: 500 });
   }
 }

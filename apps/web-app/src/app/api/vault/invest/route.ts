@@ -27,7 +27,7 @@ function stepResult(
 
 // ─── GET — current vault state ───────────────────────────────────────────────
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const { secretKey, rpcUrl, networkPassphrase } = getVaultManagerEnv();
     const { client } = buildVaultClient(secretKey, rpcUrl, networkPassphrase);
