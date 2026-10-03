@@ -7,12 +7,19 @@
  */
 
 import { NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
 import { logger } from "./logger";
 import { redactValue } from "./redact";
+import {
+  REQUEST_ID_HEADER,
+  normalizeRequestId,
+  resolveRequestId,
+} from "./requestId";
 
-export const REQUEST_ID_HEADER = "x-request-id";
-export const REQUEST_ID_HEADER_ALT = "x-correlation-id";
+export {
+  REQUEST_ID_HEADER,
+  REQUEST_ID_HEADER_ALT,
+  resolveRequestId,
+} from "./requestId";
 
 export class ClientSafeError extends Error {
   readonly status: number;
@@ -33,15 +40,6 @@ export function isClientSafeError(
   if (!err || typeof err !== "object") return false;
   if (err instanceof ClientSafeError) return true;
   return (err as { clientSafe?: boolean }).clientSafe === true;
-}
-
-export function resolveRequestId(req?: Request | null): string {
-  if (!req) return randomUUID();
-  const existing =
-    req.headers.get(REQUEST_ID_HEADER) ||
-    req.headers.get(REQUEST_ID_HEADER_ALT);
-  if (existing && existing.trim()) return existing.trim().slice(0, 128);
-  return randomUUID();
 }
 
 export function withRequestIdHeaders(
@@ -70,7 +68,9 @@ export function errorResponse(
   err: unknown,
   options: ErrorResponseOptions = {}
 ): NextResponse {
-  const requestId = options.requestId || resolveRequestId(options.req);
+  const requestId = options.requestId
+    ? normalizeRequestId(options.requestId)
+    : resolveRequestId(options.req);
   const route = options.route || "unknown";
   const safeContext = options.context
     ? (redactValue(options.context) as Record<string, unknown>)

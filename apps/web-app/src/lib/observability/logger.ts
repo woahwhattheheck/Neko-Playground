@@ -6,7 +6,7 @@
  * record failures through this module so incidents share one sink.
  */
 
-import { redactError, redactValue } from "./redact";
+import { redactError, redactString, redactValue } from "./redact";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -56,10 +56,10 @@ function write(level: LogLevel, msg: string, fields: LogFields = {}): void {
   const payload: Record<string, unknown> = {
     level,
     time: new Date().toISOString(),
-    msg: typeof msg === "string" ? msg : String(msg),
+    msg: redactString(typeof msg === "string" ? msg : String(msg)),
   };
-  if (requestId) payload.requestId = requestId;
-  if (route) payload.route = route;
+  if (requestId) payload.requestId = redactString(requestId);
+  if (route) payload.route = redactString(route);
   const redactedRest = redactValue(rest) as Record<string, unknown>;
   Object.assign(payload, redactedRest);
   const errValue = err ?? error;
