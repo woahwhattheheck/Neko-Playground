@@ -158,8 +158,8 @@ describe("acquireFaucetRateLimit (Upstash Redis NX)", () => {
 
   it("accepts Vercel KV_REST_API_* env aliases", async () => {
     vi.unstubAllEnvs();
-    delete process.env.UPSTASH_REDIS_REST_URL;
-    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "");
     vi.stubEnv("KV_REST_API_URL", "https://kv.vercel.com");
     vi.stubEnv("KV_REST_API_TOKEN", "kv-token");
 
@@ -175,5 +175,67 @@ describe("acquireFaucetRateLimit (Upstash Redis NX)", () => {
 
     const again = await acquireFaucetRateLimit("GREL");
     expect(again.allowed).toBe(true);
+  });
+});
+
+describe("acquireFaucetRateLimit (production)", () => {
+  beforeEach(() => {
+    vi.stubEnv("NODE_ENV", "production");
+  });
+
+  it.each([
+    ["missing configuration", {}],
+    [
+      "Upstash URL only",
+      { UPSTASH_REDIS_REST_URL: "https://example.upstash.io" },
+    ],
+    ["Upstash token only", { UPSTASH_REDIS_REST_TOKEN: "token" }],
+    ["Vercel KV URL only", { KV_REST_API_URL: "https://kv.vercel.com" }],
+    ["Vercel KV token only", { KV_REST_API_TOKEN: "kv-token" }],
+  ])("rejects %s instead of using instance-local state", async (_, config) => {
+    for (const [key, value] of Object.entries(config)) {
+      vi.stubEnv(key, value);
+    }
+
+    await expect(acquireFaucetRateLimit("GPROD")).rejects.toThrow(
+      "Faucet rate limiting requires Redis configuration in production"
+    );
+    expect(redisState.set).not.toHaveBeenCalled();
+  });
+
+  it("cannot bypass missing shared storage with the local disable flag", async () => {
+    vi.stubEnv("FAUCET_RATE_LIMIT_DISABLED", "true");
+
+    await expect(acquireFaucetRateLimit("GPROD")).rejects.toThrow(
+      "Faucet rate limiting requires Redis configuration in production"
+    );
+  });
+
+  it("keeps the shared cooldown across local state resets even with the disable flag", async () => {
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://example.upstash.io");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "token");
+    vi.stubEnv("FAUCET_RATE_LIMIT_DISABLED", "true");
+
+    expect((await acquireFaucetRateLimit("GPROD")).allowed).toBe(true);
+    __resetFaucetRateLimitForTests();
+    vi.advanceTimersByTime(1_000);
+
+    expect(await acquireFaucetRateLimit("GPROD")).toEqual({
+      allowed: false,
+      retryAfterSeconds: Math.ceil(FAUCET_COOLDOWN_MS / 1000) - 1,
+    });
+
+    await releaseFaucetRateLimit("GPROD");
+    expect(redisState.del).toHaveBeenCalledWith("faucet:rl:GPROD");
+  });
+
+  it("propagates Redis failures instead of allowing a local fallback", async () => {
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://example.upstash.io");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "token");
+    redisState.set.mockRejectedValueOnce(new Error("Redis unavailable"));
+
+    await expect(acquireFaucetRateLimit("GPROD")).rejects.toThrow(
+      "Redis unavailable"
+    );
   });
 });

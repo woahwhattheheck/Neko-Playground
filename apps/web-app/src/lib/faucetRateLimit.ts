@@ -18,7 +18,10 @@ function keyFor(address: string): string {
 }
 
 function isRateLimitDisabled(): boolean {
-  return process.env.FAUCET_RATE_LIMIT_DISABLED === "true";
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.FAUCET_RATE_LIMIT_DISABLED === "true"
+  );
 }
 
 /**
@@ -26,10 +29,17 @@ function isRateLimitDisabled(): boolean {
  * Read at call time so tests can stub env without reloading the module.
  */
 function getRedis(): Redis | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
   const token =
-    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
+    process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  if (!url || !token) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "Faucet rate limiting requires Redis configuration in production"
+      );
+    }
+    return null;
+  }
   return new Redis({ url, token });
 }
 
@@ -65,9 +75,10 @@ function acquireInMemory(address: string): FaucetRateLimitResult {
  * Atomically acquire a faucet mint slot for `address`.
  *
  * Production: Redis `SET key now NX EX <cooldownSeconds>` — shared across
- * cold starts and parallel instances.
- * Local / no KV: in-memory Map + one-shot warn.
- * Escape hatch: `FAUCET_RATE_LIMIT_DISABLED=true` always allows.
+ * cold starts and parallel instances. Missing configuration rejects the mint.
+ * Outside production / no KV: in-memory Map + one-shot warn.
+ * Local tooling: `FAUCET_RATE_LIMIT_DISABLED=true` only skips limiting outside
+ * production; it never bypasses the shared production cooldown.
  */
 export async function acquireFaucetRateLimit(
   address: string

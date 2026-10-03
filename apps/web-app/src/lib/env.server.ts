@@ -37,9 +37,10 @@ const serverSchema = z.object({
   // Faucet (server-only)
   FAUCET_SECRET_KEY: z.string().optional(),
   FAUCET_CONTRACT_ID: z.string().optional(),
-  // Durable faucet rate limit (Upstash Redis / Vercel KV). When unset, the
-  // route falls back to an in-memory Map with a console.warn. See
-  // lib/faucetRateLimit.ts. FAUCET_RATE_LIMIT_DISABLED=true skips limiting.
+  // Durable faucet rate limit (Upstash Redis / Vercel KV). Required for faucet
+  // requests in production; missing config rejects before minting. Outside
+  // production, an in-memory Map + warn is used when unset, and local tooling
+  // may skip limiting with FAUCET_RATE_LIMIT_DISABLED=true. See faucetRateLimit.ts.
   // Empty strings are treated as unset (local .env.example placeholders).
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),

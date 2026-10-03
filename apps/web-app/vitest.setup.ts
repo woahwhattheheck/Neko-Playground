@@ -32,11 +32,8 @@ Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
 });
 
-Object.defineProperty(globalThis, "window", {
-  value: globalThis,
-  writable: true,
-  configurable: true,
-});
+// Node suites must keep `window` undefined so server-only imports stay valid.
+// Browser suites opt into jsdom, which already provides its own window.
 
 process.env.NEXT_PUBLIC_STELLAR_NETWORK ??= "TESTNET";
 process.env.NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE ??=
