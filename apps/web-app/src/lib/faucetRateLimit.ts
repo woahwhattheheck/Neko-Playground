@@ -1,13 +1,25 @@
+import { randomUUID } from "node:crypto";
 import { Redis } from "@upstash/redis";
 import { FAUCET_COOLDOWN_MS } from "@/lib/constants/faucet";
 
 export type FaucetRateLimitResult = {
   allowed: boolean;
   retryAfterSeconds: number;
+  releaseToken?: string;
 };
 
-const memoryStore = new Map<string, number>();
+const memoryStore = new Map<
+  string,
+  { acquiredAt: number; releaseToken: string }
+>();
 let warnedInMemoryFallback = false;
+
+const releaseIfOwnedScript = `
+  if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+  end
+  return 0
+`;
 
 function cooldownSeconds(): number {
   return Math.max(1, Math.ceil(FAUCET_COOLDOWN_MS / 1000));
@@ -55,26 +67,27 @@ function acquireInMemory(address: string): FaucetRateLimitResult {
 
   const now = Date.now();
   const last = memoryStore.get(address);
-  if (last !== undefined && now - last < FAUCET_COOLDOWN_MS) {
+  if (last !== undefined && now - last.acquiredAt < FAUCET_COOLDOWN_MS) {
     return {
       allowed: false,
       retryAfterSeconds: Math.max(
         1,
-        Math.ceil((FAUCET_COOLDOWN_MS - (now - last)) / 1000)
+        Math.ceil((FAUCET_COOLDOWN_MS - (now - last.acquiredAt)) / 1000)
       ),
     };
   }
 
   // Check + set is synchronous (no await between), so two concurrent
   // requests on one Node process cannot both pass within a single tick.
-  memoryStore.set(address, now);
-  return { allowed: true, retryAfterSeconds: 0 };
+  const releaseToken = randomUUID();
+  memoryStore.set(address, { acquiredAt: now, releaseToken });
+  return { allowed: true, retryAfterSeconds: 0, releaseToken };
 }
 
 /**
  * Atomically acquire a faucet mint slot for `address`.
  *
- * Production: Redis `SET key now NX EX <cooldownSeconds>` — shared across
+ * Production: Redis `SET key releaseToken NX EX <cooldownSeconds>` — shared across
  * cold starts and parallel instances. Missing configuration rejects the mint.
  * Outside production / no KV: in-memory Map + one-shot warn.
  * Local tooling: `FAUCET_RATE_LIMIT_DISABLED=true` only skips limiting outside
@@ -94,10 +107,11 @@ export async function acquireFaucetRateLimit(
 
   const key = keyFor(address);
   const ex = cooldownSeconds();
-  const set = await redis.set(key, Date.now(), { nx: true, ex });
+  const releaseToken = randomUUID();
+  const set = await redis.set(key, releaseToken, { nx: true, ex });
 
   if (set === "OK") {
-    return { allowed: true, retryAfterSeconds: 0 };
+    return { allowed: true, retryAfterSeconds: 0, releaseToken };
   }
 
   const ttl = await redis.ttl(key);
@@ -108,19 +122,25 @@ export async function acquireFaucetRateLimit(
 }
 
 /**
- * Release a previously acquired slot (e.g. mint failed). Safe no-op when
- * limiting is disabled.
+ * Release only the slot owned by this acquisition (e.g. mint failed). A late
+ * failure after expiry or a retried cleanup cannot delete a successor's slot.
+ * Disabled limiting returns no token, so its cleanup is a no-op.
  */
-export async function releaseFaucetRateLimit(address: string): Promise<void> {
-  if (isRateLimitDisabled()) return;
+export async function releaseFaucetRateLimit(
+  address: string,
+  releaseToken: string | undefined
+): Promise<void> {
+  if (releaseToken === undefined) return;
 
   const redis = getRedis();
   if (!redis) {
-    memoryStore.delete(address);
+    if (memoryStore.get(address)?.releaseToken === releaseToken) {
+      memoryStore.delete(address);
+    }
     return;
   }
 
-  await redis.del(keyFor(address));
+  await redis.eval(releaseIfOwnedScript, [keyFor(address)], [releaseToken]);
 }
 
 /** Test-only: clear in-memory state and the one-shot warn flag. */

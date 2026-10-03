@@ -31,9 +31,13 @@ const redisState = vi.hoisted(() => {
       }
       return Math.ceil(remainingMs / 1000);
     }),
-    del: vi.fn(async (key: string) => {
-      store.delete(key);
-      return 1;
+    eval: vi.fn(async (_script: string, [key]: string[], [token]: string[]) => {
+      const entry = store.get(key);
+      if (entry && entry.expiresAt > Date.now() && entry.value === token) {
+        store.delete(key);
+        return 1;
+      }
+      return 0;
     }),
     clear() {
       store.clear();
@@ -45,7 +49,7 @@ vi.mock("@upstash/redis", () => {
   class Redis {
     set = redisState.set;
     ttl = redisState.ttl;
-    del = redisState.del;
+    eval = redisState.eval;
   }
   return { Redis };
 });
@@ -62,7 +66,7 @@ beforeEach(() => {
   redisState.clear();
   redisState.set.mockClear();
   redisState.ttl.mockClear();
-  redisState.del.mockClear();
+  redisState.eval.mockClear();
   __resetFaucetRateLimitForTests();
   vi.unstubAllEnvs();
   delete process.env.UPSTASH_REDIS_REST_URL;
@@ -83,7 +87,11 @@ describe("acquireFaucetRateLimit (in-memory fallback)", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const first = await acquireFaucetRateLimit("GABC");
-    expect(first).toEqual({ allowed: true, retryAfterSeconds: 0 });
+    expect(first).toEqual({
+      allowed: true,
+      retryAfterSeconds: 0,
+      releaseToken: expect.any(String),
+    });
 
     const second = await acquireFaucetRateLimit("GABC");
     expect(second.allowed).toBe(false);
@@ -100,17 +108,43 @@ describe("acquireFaucetRateLimit (in-memory fallback)", () => {
     vi.advanceTimersByTime(FAUCET_COOLDOWN_MS + 1);
 
     const again = await acquireFaucetRateLimit("GABC");
-    expect(again).toEqual({ allowed: true, retryAfterSeconds: 0 });
+    expect(again).toEqual({
+      allowed: true,
+      retryAfterSeconds: 0,
+      releaseToken: expect.any(String),
+    });
   });
 
   it("release frees the in-memory slot", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await acquireFaucetRateLimit("GABC");
-    await releaseFaucetRateLimit("GABC");
+    const first = await acquireFaucetRateLimit("GABC");
+    await releaseFaucetRateLimit("GABC", first.releaseToken);
 
     const again = await acquireFaucetRateLimit("GABC");
     expect(again.allowed).toBe(true);
+  });
+
+  it("keeps a successor's cooldown when an expired mint fails late", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const first = await acquireFaucetRateLimit("GLATE");
+    vi.advanceTimersByTime(FAUCET_COOLDOWN_MS + 1);
+    await acquireFaucetRateLimit("GLATE");
+    await releaseFaucetRateLimit("GLATE", first.releaseToken);
+
+    expect((await acquireFaucetRateLimit("GLATE")).allowed).toBe(false);
+  });
+
+  it("does not release a new slot when an old release is retried in the same millisecond", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const first = await acquireFaucetRateLimit("GRETRY");
+    await releaseFaucetRateLimit("GRETRY", first.releaseToken);
+    await acquireFaucetRateLimit("GRETRY");
+    await releaseFaucetRateLimit("GRETRY", first.releaseToken);
+
+    expect((await acquireFaucetRateLimit("GRETRY")).allowed).toBe(false);
   });
 
   it("FAUCET_RATE_LIMIT_DISABLED skips limiting", async () => {
@@ -120,7 +154,10 @@ describe("acquireFaucetRateLimit (in-memory fallback)", () => {
     const b = await acquireFaucetRateLimit("GABC");
     expect(a.allowed).toBe(true);
     expect(b.allowed).toBe(true);
+    expect(a.releaseToken).toBeUndefined();
+    await releaseFaucetRateLimit("GABC", a.releaseToken);
     expect(redisState.set).not.toHaveBeenCalled();
+    expect(redisState.eval).not.toHaveBeenCalled();
   });
 });
 
@@ -135,7 +172,7 @@ describe("acquireFaucetRateLimit (Upstash Redis NX)", () => {
     expect(first.allowed).toBe(true);
     expect(redisState.set).toHaveBeenCalledWith(
       "faucet:rl:GADDR",
-      expect.any(Number),
+      first.releaseToken,
       { nx: true, ex: Math.ceil(FAUCET_COOLDOWN_MS / 1000) }
     );
 
@@ -168,13 +205,35 @@ describe("acquireFaucetRateLimit (Upstash Redis NX)", () => {
     expect(redisState.set).toHaveBeenCalled();
   });
 
-  it("release deletes the Redis key", async () => {
-    await acquireFaucetRateLimit("GREL");
-    await releaseFaucetRateLimit("GREL");
-    expect(redisState.del).toHaveBeenCalledWith("faucet:rl:GREL");
+  it("release atomically deletes the owned Redis key", async () => {
+    const first = await acquireFaucetRateLimit("GREL");
+    await releaseFaucetRateLimit("GREL", first.releaseToken);
+    expect(redisState.eval).toHaveBeenCalledWith(
+      expect.any(String),
+      ["faucet:rl:GREL"],
+      [first.releaseToken]
+    );
 
     const again = await acquireFaucetRateLimit("GREL");
     expect(again.allowed).toBe(true);
+  });
+
+  it("keeps a successor's cooldown when an expired mint fails late", async () => {
+    const first = await acquireFaucetRateLimit("GLATE");
+    vi.advanceTimersByTime(FAUCET_COOLDOWN_MS + 1);
+    await acquireFaucetRateLimit("GLATE");
+    await releaseFaucetRateLimit("GLATE", first.releaseToken);
+
+    expect((await acquireFaucetRateLimit("GLATE")).allowed).toBe(false);
+  });
+
+  it("does not release a new slot when an old release is retried in the same millisecond", async () => {
+    const first = await acquireFaucetRateLimit("GRETRY");
+    await releaseFaucetRateLimit("GRETRY", first.releaseToken);
+    await acquireFaucetRateLimit("GRETRY");
+    await releaseFaucetRateLimit("GRETRY", first.releaseToken);
+
+    expect((await acquireFaucetRateLimit("GRETRY")).allowed).toBe(false);
   });
 });
 
@@ -216,7 +275,8 @@ describe("acquireFaucetRateLimit (production)", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "token");
     vi.stubEnv("FAUCET_RATE_LIMIT_DISABLED", "true");
 
-    expect((await acquireFaucetRateLimit("GPROD")).allowed).toBe(true);
+    const first = await acquireFaucetRateLimit("GPROD");
+    expect(first.allowed).toBe(true);
     __resetFaucetRateLimitForTests();
     vi.advanceTimersByTime(1_000);
 
@@ -225,8 +285,12 @@ describe("acquireFaucetRateLimit (production)", () => {
       retryAfterSeconds: Math.ceil(FAUCET_COOLDOWN_MS / 1000) - 1,
     });
 
-    await releaseFaucetRateLimit("GPROD");
-    expect(redisState.del).toHaveBeenCalledWith("faucet:rl:GPROD");
+    await releaseFaucetRateLimit("GPROD", first.releaseToken);
+    expect(redisState.eval).toHaveBeenCalledWith(
+      expect.any(String),
+      ["faucet:rl:GPROD"],
+      [first.releaseToken]
+    );
   });
 
   it("propagates Redis failures instead of allowing a local fallback", async () => {

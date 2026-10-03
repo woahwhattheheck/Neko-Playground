@@ -135,6 +135,7 @@ async function mintTokenLegacy(
 export async function POST(request: NextRequest) {
   let rateLimitAcquired = false;
   let rateLimitAddress: string | undefined;
+  let rateLimitReleaseToken: string | undefined;
 
   try {
     const network = clientEnv.stellarNetwork;
@@ -168,6 +169,7 @@ export async function POST(request: NextRequest) {
     }
     rateLimitAcquired = true;
     rateLimitAddress = address;
+    rateLimitReleaseToken = limit.releaseToken;
 
     const { rpcUrl, horizonUrl, networkPassphrase: passphrase } = clientEnv;
 
@@ -234,7 +236,7 @@ export async function POST(request: NextRequest) {
 
     // Failed mints should not burn the cooldown slot.
     if (noneSucceeded) {
-      await releaseFaucetRateLimit(address);
+      await releaseFaucetRateLimit(address, rateLimitReleaseToken);
       rateLimitAcquired = false;
     }
 
@@ -245,7 +247,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (rateLimitAcquired && rateLimitAddress) {
       try {
-        await releaseFaucetRateLimit(rateLimitAddress);
+        await releaseFaucetRateLimit(rateLimitAddress, rateLimitReleaseToken);
       } catch {
         // Best-effort release; surface the original mint error below.
       }
