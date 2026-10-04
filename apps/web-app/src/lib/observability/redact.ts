@@ -113,7 +113,7 @@ function redactNestedValue(
 export function redactError(err: unknown): Record<string, unknown> {
   if (err instanceof Error) {
     return {
-      name: err.name,
+      name: redactString(err.name),
       message: redactString(err.message),
       stack: err.stack ? redactString(err.stack) : undefined,
     };

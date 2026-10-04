@@ -46,6 +46,42 @@ describe("redact", () => {
     expect(String(err.message)).not.toContain(stellar);
   });
 
+  it("redacts sensitive error names in the JSON log and retains safe names", () => {
+    const names = [
+      "Bearer synthetic-name-token",
+      "G" + "A".repeat(55),
+      "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+      "AAAA" + "B".repeat(48) + "==",
+      "TypeError",
+    ];
+    const lines: string[] = [];
+    configureLogger({ sink: (line) => lines.push(line) });
+    try {
+      for (const name of names) {
+        const err = new Error("ordinary failure");
+        err.name = name;
+        err.stack = "Error: ordinary failure";
+        logger.error("provider_failure", {
+          requestId: "request-name-1",
+          route: "/api/vault/apy",
+          err,
+        });
+        const line = lines[lines.length - 1];
+        const entry = JSON.parse(line);
+        expect(entry.err.name).toBe(redactString(name));
+        expect(entry.err.message).toBe("ordinary failure");
+        expect(entry.err.stack).toBe("Error: ordinary failure");
+        expect(entry.requestId).toBe("request-name-1");
+        expect(entry.route).toBe("/api/vault/apy");
+        expect(err.name).toBe(name);
+        if (name !== "TypeError") expect(line).not.toContain(name);
+      }
+      expect(lines).toHaveLength(names.length);
+    } finally {
+      resetLoggerForTests();
+    }
+  });
+
   it("cuts object, array, and mutual ancestor cycles without losing redaction", () => {
     const object: Record<string, unknown> = { token: "cycle-secret", safe: true };
     object.self = object;
