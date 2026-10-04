@@ -1253,7 +1253,7 @@ export async function getQueuedReserveParams(
       {
         type: "contract",
         contractIds: [contractId],
-        topics: [topicAlternatives],
+        topics: topicAlternatives.map((topic) => [topic]),
       },
     ],
   });
