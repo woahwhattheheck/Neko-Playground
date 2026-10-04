@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextRequest } from "next/server";
+import type { Transaction } from "@stellar/stellar-sdk";
 
 const state = vi.hoisted(() => ({
   contractId: "bulk-faucet" as string | undefined,
@@ -85,6 +86,7 @@ vi.mock("@/lib/helpers/stellar/sorobanServer", () => ({
 
 import { POST } from "@/app/api/faucet/route";
 import { __resetFaucetRateLimitForTests } from "@/lib/faucetRateLimit";
+import { submitFaucetMint } from "@/lib/faucetSubmission";
 
 function request() {
   return new Request("http://localhost/api/faucet", {
@@ -95,7 +97,9 @@ function request() {
 }
 
 beforeEach(() => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({
+    toFake: ["Date", "performance", "setTimeout", "clearTimeout"],
+  });
   vi.setSystemTime(new Date("2026-10-04T09:00:00Z"));
   vi.stubEnv("NODE_ENV", "test");
   for (const key of [
@@ -124,6 +128,25 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   __resetFaucetRateLimitForTests();
+});
+
+it("does not start a submission after its queued RPC reaches the deadline", async () => {
+  let monotonicNow = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+  const pending = submitFaucetMint(
+    { sendTransaction: state.send, getTransaction: state.read },
+    { hash: () => Buffer.from(state.localHash, "hex") } as Transaction
+  );
+
+  // Model a blocked caller before the queued RPC microtask gets to run.
+  monotonicNow = 30_000;
+  await expect(pending).rejects.toMatchObject({
+    name: "FaucetMintPendingError",
+    hash: state.localHash,
+  });
+  expect(state.send).not.toHaveBeenCalled();
+  expect(state.read).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
 });
 
 describe.each(["bulk", "legacy"])("%s mint cooldown", (mode) => {
@@ -163,6 +186,69 @@ describe.each(["bulk", "legacy"])("%s mint cooldown", (mode) => {
     );
     expect(item.success).toBe(false);
   });
+
+  it.each(["stalled send", "stalled status read", "slow status reads"])(
+    "returns pending within the overall deadline after %s",
+    async (failure) => {
+      let settleLate: (() => void) | undefined;
+      if (failure === "stalled send") {
+        state.send.mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              settleLate = () =>
+                resolve({ status: "PENDING", hash: state.remoteHash });
+            })
+        );
+      } else if (failure === "stalled status read") {
+        state.read.mockImplementation(
+          () =>
+            new Promise((_, reject) => {
+              settleLate = () => reject(new Error("late RPC failure"));
+            })
+        );
+      } else {
+        state.read.mockImplementation(
+          () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ status: "NOT_FOUND" }), 10_000)
+            )
+        );
+      }
+
+      let settled = false;
+      const started = performance.now();
+      const pending = POST(request()).then((response) => {
+        settled = true;
+        return response;
+      });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const response = await pending;
+      expect(performance.now() - started).toBe(30_000);
+      expect(response.status).toBe(202);
+      const body = await response.json();
+      expect(body).toMatchObject({ success: false, pending: true });
+      const item = mode === "bulk" ? body : body.results[0];
+      expect(item.hash).toBe(
+        failure === "stalled send" ? state.localHash : state.remoteHash
+      );
+      expect((await POST(request())).status).toBe(429);
+      expect(state.send).toHaveBeenCalledTimes(1);
+      const readsAtDeadline = state.read.mock.calls.length;
+      expect(readsAtDeadline).toBe(
+        failure === "stalled send" ? 0 : failure === "stalled status read" ? 1 : 3
+      );
+
+      // Late acknowledgements/errors/results are consumed without a second
+      // submission or restarting the confirmation loop after HTTP 202.
+      settleLate?.();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(state.send).toHaveBeenCalledTimes(1);
+      expect(state.read).toHaveBeenCalledTimes(readsAtDeadline);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
 
   it.each(["ERROR", "TRY_AGAIN_LATER", "FAILED"])(
     "releases after definitive %s",

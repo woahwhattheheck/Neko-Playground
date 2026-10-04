@@ -13,6 +13,39 @@ export class FaucetMintPendingError extends Error {
   }
 }
 
+const MINT_CONFIRMATION_TIMEOUT_MS = 30_000;
+
+/** Bound each RPC by the same deadline; late settlement cannot resume polling. */
+async function awaitMintRpc<T>(
+  request: () => Promise<T>,
+  deadline: number,
+  hash: string
+): Promise<T> {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) throw new FaucetMintPendingError(hash);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      Promise.resolve().then(() => {
+        if (performance.now() >= deadline) throw new FaucetMintPendingError(hash);
+        return request();
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new FaucetMintPendingError(hash)),
+          remaining
+        );
+      }),
+    ]);
+    // A busy event loop may deliver an RPC result before its overdue timer.
+    if (performance.now() >= deadline) throw new FaucetMintPendingError(hash);
+    return result;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Submit once and distinguish a definitive failure from an unknown outcome. */
 export async function submitFaucetMint(
   server: Pick<rpc.Server, "sendTransaction" | "getTransaction">,
@@ -20,9 +53,14 @@ export async function submitFaucetMint(
 ): Promise<{ hash: string }> {
   // The local hash remains available even if the submission response is lost.
   const localHash = transaction.hash().toString("hex");
+  const deadline = performance.now() + MINT_CONFIRMATION_TIMEOUT_MS;
   let response: Awaited<ReturnType<rpc.Server["sendTransaction"]>>;
   try {
-    response = await server.sendTransaction(transaction);
+    response = await awaitMintRpc(
+      () => server.sendTransaction(transaction),
+      deadline,
+      localHash
+    );
   } catch {
     throw new FaucetMintPendingError(localHash);
   }
@@ -37,7 +75,11 @@ export async function submitFaucetMint(
   for (let retries = 0; retries <= 30; retries++) {
     let result: Awaited<ReturnType<rpc.Server["getTransaction"]>>;
     try {
-      result = await server.getTransaction(hash);
+      result = await awaitMintRpc(
+        () => server.getTransaction(hash),
+        deadline,
+        hash
+      );
     } catch {
       throw new FaucetMintPendingError(hash);
     }
@@ -47,7 +89,11 @@ export async function submitFaucetMint(
       throw new Error("Transaction failed on-chain");
     }
     if (retries < 30) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new FaucetMintPendingError(hash);
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(1000, remaining))
+      );
     }
   }
 
