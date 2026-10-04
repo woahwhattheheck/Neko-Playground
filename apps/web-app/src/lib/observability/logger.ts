@@ -54,14 +54,14 @@ function write(level: LogLevel, msg: string, fields: LogFields = {}): void {
     error?: unknown;
   };
   const payload: Record<string, unknown> = {
+    ...(redactValue(rest) as Record<string, unknown>),
+    // The logger owns its envelope even when caller fields use these names.
     level,
     time: new Date().toISOString(),
     msg: redactString(typeof msg === "string" ? msg : String(msg)),
   };
   if (requestId) payload.requestId = redactString(requestId);
   if (route) payload.route = redactString(route);
-  const redactedRest = redactValue(rest) as Record<string, unknown>;
-  Object.assign(payload, redactedRest);
   const errValue = err ?? error;
   if (errValue !== undefined) {
     payload.err = redactError(errValue);

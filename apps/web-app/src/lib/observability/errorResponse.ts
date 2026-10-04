@@ -77,9 +77,9 @@ export function errorResponse(
     : undefined;
 
   logger.error("api_route_error", {
+    ...(safeContext || {}),
     requestId,
     route,
-    ...(safeContext || {}),
     err,
   });
 

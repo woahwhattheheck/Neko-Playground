@@ -6,7 +6,7 @@ import {
   resolveRequestId,
   REQUEST_ID_HEADER,
 } from "../errorResponse";
-import { configureLogger, resetLoggerForTests } from "../logger";
+import { configureLogger, logger, resetLoggerForTests } from "../logger";
 import { middleware } from "@/middleware";
 import { GET as getInvest } from "@/app/api/vault/invest/route";
 import { GET as getHistory } from "@/app/api/vault/history/route";
@@ -93,6 +93,63 @@ describe("errorResponse", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe("walletAddress is required");
+  });
+
+  it("keeps logger envelope fields authoritative over caller context", () => {
+    logger.error("expected_failure", {
+      level: "info",
+      time: "forged-time",
+      msg: "forged-message",
+      requestId: "req-envelope",
+      attempt: 2,
+      token: "private-context-token",
+    });
+    expect(lines).toHaveLength(1);
+    const entry = JSON.parse(lines[0]);
+    expect(entry).toMatchObject({
+      level: "error",
+      msg: "expected_failure",
+      requestId: "req-envelope",
+      attempt: 2,
+      token: "[REDACTED]",
+    });
+    expect(entry.time).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(lines[0]).not.toContain("forged-");
+    expect(lines[0]).not.toContain("private-context-token");
+  });
+
+  it("keeps response and log correlation despite conflicting context", async () => {
+    const context = Object.freeze({
+      requestId: "wrong-request",
+      route: "/wrong-route",
+      level: "debug",
+      time: "wrong-time",
+      msg: "wrong-message",
+      token: "private-error-token",
+      attempt: 3,
+    });
+    const response = errorResponse(new Error("upstream failed"), {
+      requestId: "req-authoritative",
+      route: "/api/expected",
+      context,
+    });
+    const body = await response.json();
+    expect(response.status).toBe(500);
+    expect(response.headers.get(REQUEST_ID_HEADER)).toBe(body.requestId);
+    expect(body.requestId).toBe("req-authoritative");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({
+      requestId: body.requestId,
+      route: "/api/expected",
+      level: "error",
+      msg: "api_route_error",
+      token: "[REDACTED]",
+      attempt: 3,
+      err: { message: "upstream failed" },
+    });
+    expect(lines[0]).not.toContain("wrong-");
+    expect(lines[0]).not.toContain("private-error-token");
+    expect(context.requestId).toBe("wrong-request");
   });
 
   it("reuses an incoming request id", () => {
