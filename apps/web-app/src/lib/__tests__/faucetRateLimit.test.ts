@@ -182,6 +182,21 @@ describe("acquireFaucetRateLimit (Upstash Redis NX)", () => {
     expect(redisState.ttl).toHaveBeenCalledWith("faucet:rl:GADDR");
   });
 
+  it("reports one second for TTL zero and retains unavailable TTL fallback", async () => {
+    expect((await acquireFaucetRateLimit("GTTL")).allowed).toBe(true);
+    const retryAfterSeconds: number[] = [];
+
+    for (const ttl of [0, -1, -2, 1]) {
+      redisState.ttl.mockResolvedValueOnce(ttl);
+      const result = await acquireFaucetRateLimit("GTTL");
+      expect(result.allowed).toBe(false);
+      retryAfterSeconds.push(result.retryAfterSeconds);
+    }
+
+    const cooldown = Math.ceil(FAUCET_COOLDOWN_MS / 1000);
+    expect(retryAfterSeconds).toEqual([1, cooldown, cooldown, 1]);
+  });
+
   it("two parallel acquires produce a single winner", async () => {
     const [a, b] = await Promise.all([
       acquireFaucetRateLimit("GPARALLEL"),

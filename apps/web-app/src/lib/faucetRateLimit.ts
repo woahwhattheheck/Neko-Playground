@@ -117,7 +117,7 @@ export async function acquireFaucetRateLimit(
   const ttl = await redis.ttl(key);
   return {
     allowed: false,
-    retryAfterSeconds: ttl > 0 ? ttl : ex,
+    retryAfterSeconds: ttl >= 0 ? Math.max(1, ttl) : ex,
   };
 }
 
