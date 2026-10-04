@@ -4,6 +4,7 @@ import {
   TransactionBuilder,
   Horizon,
   nativeToScVal,
+  scValToNative,
   rpc,
   xdr,
 } from "@stellar/stellar-sdk";
@@ -1139,3 +1140,151 @@ export async function getActiveBadDebtAuctions(
 
   return active;
 }
+
+// ---------------------------------------------------------------------------
+// Reserve parameter timelock — event-based queue reconstruction
+// ---------------------------------------------------------------------------
+
+/**
+ * The reserve-config timelock is 7 days. A 9-day lookback keeps the queue
+ * visible through its unlock point while allowing for ledger-close variance.
+ */
+const RESERVE_CONFIG_EVENT_LOOKBACK_LEDGERS = 160_000;
+
+const RESERVE_CONFIG_QUEUED_EVENTS = new Set([
+  "ReserveConfigQueuedEvent",
+  "reserve_config_queued_event",
+]);
+const RESERVE_CONFIG_APPLIED_EVENTS = new Set([
+  "ReserveConfigAppliedEvent",
+  "reserve_config_applied_event",
+]);
+const RESERVE_CONFIG_CANCELLED_EVENTS = new Set([
+  "ReserveConfigCancelledEvent",
+  "reserve_config_cancelled_event",
+]);
+
+export interface QueuedReserveParamState {
+  asset: string;
+  unlockTime: number;
+}
+
+function eventDataRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function reserveConfigEventAsset(
+  nativeTopics: unknown[],
+  data: unknown
+): string | null {
+  const record = eventDataRecord(data);
+  const fromData = record?.asset;
+  if (typeof fromData === "string" && fromData.length > 0) return fromData;
+
+  // Contract events may place indexed fields in topics rather than data.
+  for (const topic of nativeTopics.slice(1)) {
+    if (typeof topic === "string" && topic.length > 0) return topic;
+  }
+
+  if (Array.isArray(data)) {
+    const value = data.find(
+      (entry): entry is string => typeof entry === "string" && entry.length > 0
+    );
+    if (value) return value;
+  }
+
+  return null;
+}
+
+function reserveConfigEventUnlockTime(
+  nativeTopics: unknown[],
+  data: unknown
+): number | null {
+  const record = eventDataRecord(data);
+  const candidate =
+    record?.unlock_time ??
+    (Array.isArray(data)
+      ? data.find(
+          (entry) => typeof entry === "number" || typeof entry === "bigint"
+        )
+      : typeof data === "number" || typeof data === "bigint"
+        ? data
+        : undefined) ??
+    nativeTopics
+      .slice(1)
+      .find((entry) => typeof entry === "number" || typeof entry === "bigint");
+
+  if (typeof candidate !== "number" && typeof candidate !== "bigint") {
+    return null;
+  }
+
+  const unlockTime = Number(candidate);
+  return Number.isSafeInteger(unlockTime) && unlockTime > 0 ? unlockTime : null;
+}
+
+/**
+ * Reconstruct currently-pending reserve-parameter changes from the contract's
+ * lifecycle events. Queue events create/replace state for an asset; apply and
+ * cancel events remove it.
+ */
+export async function getQueuedReserveParams(
+  contractId: string
+): Promise<QueuedReserveParamState[]> {
+  const sorobanServer = getSorobanServer(rpcUrl);
+  const { sequence: currentLedger } = await sorobanServer.getLatestLedger();
+  const startLedger = Math.max(
+    1,
+    currentLedger - RESERVE_CONFIG_EVENT_LOOKBACK_LEDGERS
+  );
+
+  const eventNames = [
+    ...RESERVE_CONFIG_QUEUED_EVENTS,
+    ...RESERVE_CONFIG_APPLIED_EVENTS,
+    ...RESERVE_CONFIG_CANCELLED_EVENTS,
+  ];
+  const topicAlternatives = eventNames.map((name) =>
+    xdr.ScVal.scvSymbol(name).toXDR("base64")
+  );
+
+  const response = await sorobanServer.getEvents({
+    startLedger,
+    filters: [
+      {
+        type: "contract",
+        contractIds: [contractId],
+        topics: [topicAlternatives],
+      },
+    ],
+  });
+
+  const pending = new Map<string, number>();
+
+  for (const event of response.events) {
+    const nativeTopics = event.topic.map((topic) => scValToNative(topic));
+    const eventName =
+      typeof nativeTopics[0] === "string" ? nativeTopics[0] : "";
+    const data = scValToNative(event.value);
+    const asset = reserveConfigEventAsset(nativeTopics, data);
+    if (!asset) continue;
+
+    if (RESERVE_CONFIG_QUEUED_EVENTS.has(eventName)) {
+      const unlockTime = reserveConfigEventUnlockTime(nativeTopics, data);
+      if (unlockTime !== null) pending.set(asset, unlockTime);
+      continue;
+    }
+
+    if (
+      RESERVE_CONFIG_APPLIED_EVENTS.has(eventName) ||
+      RESERVE_CONFIG_CANCELLED_EVENTS.has(eventName)
+    ) {
+      pending.delete(asset);
+    }
+  }
+
+  return Array.from(pending, ([asset, unlockTime]) => ({
+    asset,
+    unlockTime,
+  })).sort((a, b) => a.asset.localeCompare(b.asset));
+}
+
