@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { maskWallet, redactString, redactValue, redactError } from "../redact";
+import { configureLogger, logger, resetLoggerForTests } from "../logger";
 
 describe("redact", () => {
   it("masks stellar and evm wallets in strings", () => {
@@ -43,5 +44,76 @@ describe("redact", () => {
     const stellar = "G" + "E".repeat(55);
     const err = redactError(new Error(`swap failed for ${stellar}`));
     expect(String(err.message)).not.toContain(stellar);
+  });
+
+  it("cuts object, array, and mutual ancestor cycles without losing redaction", () => {
+    const object: Record<string, unknown> = { token: "cycle-secret", safe: true };
+    object.self = object;
+    expect(redactValue(object)).toEqual({
+      token: "[REDACTED]",
+      safe: true,
+      self: "[Circular]",
+    });
+
+    const array: unknown[] = ["Bearer array-secret"];
+    array.push(array);
+    expect(redactValue(array)).toEqual(["Bearer [REDACTED]", "[Circular]"]);
+
+    const left: Record<string, unknown> = { safe: "left" };
+    const right = { token: "mutual-secret", left };
+    left.right = right;
+    expect(redactValue(left)).toEqual({
+      safe: "left",
+      right: { token: "[REDACTED]", left: "[Circular]" },
+    });
+  });
+
+  it("retains shared acyclic values in every position and redaction call", () => {
+    const shared = Object.freeze({ token: "shared-secret", safe: "retained" });
+    const input = Object.freeze({
+      first: shared,
+      second: shared,
+      list: Object.freeze([shared, shared]),
+    });
+    const expected = {
+      first: { token: "[REDACTED]", safe: "retained" },
+      second: { token: "[REDACTED]", safe: "retained" },
+      list: [
+        { token: "[REDACTED]", safe: "retained" },
+        { token: "[REDACTED]", safe: "retained" },
+      ],
+    };
+    expect(redactValue(input)).toEqual(expected);
+    expect(redactValue(input)).toEqual(expected);
+    expect(shared.token).toBe("shared-secret");
+  });
+
+  it("emits one safe JSON log for frozen cyclic diagnostic context", () => {
+    const lines: string[] = [];
+    const details: Record<string, unknown> = {
+      token: "log-secret",
+      safe: "retained",
+    };
+    details.self = details;
+    Object.freeze(details);
+    configureLogger({ sink: (line) => lines.push(line) });
+    try {
+      logger.error("cyclic_context", { requestId: "request-cycle-1", details });
+      expect(lines).toHaveLength(1);
+      const entry = JSON.parse(lines[0]);
+      expect(entry.level).toBe("error");
+      expect(entry.msg).toBe("cyclic_context");
+      expect(entry.requestId).toBe("request-cycle-1");
+      expect(entry.details).toEqual({
+        token: "[REDACTED]",
+        safe: "retained",
+        self: "[Circular]",
+      });
+      expect(lines[0]).not.toContain("log-secret");
+      expect(details.self).toBe(details);
+      expect(details.token).toBe("log-secret");
+    } finally {
+      resetLoggerForTests();
+    }
   });
 });

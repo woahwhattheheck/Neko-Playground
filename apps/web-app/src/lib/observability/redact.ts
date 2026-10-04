@@ -58,7 +58,11 @@ export function redactString(input: string): string {
     .replace(WALLET_RE, (match) => maskWallet(match));
 }
 
-function redactKeyValue(key: string, value: unknown): unknown {
+function redactKeyValue(
+  key: string,
+  value: unknown,
+  ancestors: WeakSet<object>
+): unknown {
   if (SENSITIVE_KEYS.has(key.toLowerCase())) {
     if (typeof value === "string") {
       if (
@@ -72,20 +76,36 @@ function redactKeyValue(key: string, value: unknown): unknown {
     }
     return "[REDACTED]";
   }
-  return redactValue(value);
+  return redactNestedValue(value, ancestors);
 }
 
 export function redactValue(value: unknown): unknown {
+  return redactNestedValue(value, new WeakSet<object>());
+}
+
+function redactNestedValue(
+  value: unknown,
+  ancestors: WeakSet<object>
+): unknown {
   if (value == null) return value;
   if (typeof value === "string") return redactString(value);
   if (typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) return value.map((v) => redactValue(v));
   if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = redactKeyValue(k, v);
+    if (ancestors.has(value)) return "[Circular]";
+    ancestors.add(value);
+    try {
+      if (Array.isArray(value)) {
+        return value.map((v) => redactNestedValue(v, ancestors));
+      }
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = redactKeyValue(k, v, ancestors);
+      }
+      return out;
+    } finally {
+      // A shared object in another branch is not an ancestor cycle.
+      ancestors.delete(value);
     }
-    return out;
   }
   return String(value);
 }
