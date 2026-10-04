@@ -266,6 +266,13 @@ describe("acquireFaucetRateLimit (production)", () => {
     ["Upstash token only", { UPSTASH_REDIS_REST_TOKEN: "token" }],
     ["Vercel KV URL only", { KV_REST_API_URL: "https://kv.vercel.com" }],
     ["Vercel KV token only", { KV_REST_API_TOKEN: "kv-token" }],
+    [
+      "cross-provider partial configuration",
+      {
+        UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+        KV_REST_API_TOKEN: "kv-token",
+      },
+    ],
   ])("rejects %s instead of using instance-local state", async (_, config) => {
     for (const [key, value] of Object.entries(config)) {
       vi.stubEnv(key, value);
