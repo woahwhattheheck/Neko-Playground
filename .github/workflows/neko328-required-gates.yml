@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: neko328-required-gates-28af81e4
+  group: neko328-required-gates-cb37d07e
   cancel-in-progress: false
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
       - name: Checkout composed source
         uses: actions/checkout@v4
         with:
-          ref: 28af81e4817f44ca05dd55063a1c78eb59a94faa
+          ref: cb37d07e4ecc6231d9186040bd1494e93ade59da
           path: source
           fetch-depth: 1
           persist-credentials: false
@@ -104,7 +104,7 @@ jobs:
           from pathlib import Path
           root = Path('../evidence')
           statuses = {name: int((root / (name + '.exit')).read_text()) if (root / (name + '.exit')).exists() else None for name in ('install', 'lint', 'typecheck', 'test')}
-          result = {'source': '28af81e4817f44ca05dd55063a1c78eb59a94faa', 'exit_codes': statuses, 'all_passed': all(value == 0 for value in statuses.values())}
+          result = {'source': 'cb37d07e4ecc6231d9186040bd1494e93ade59da', 'exit_codes': statuses, 'all_passed': all(value == 0 for value in statuses.values())}
           text = json.dumps(result, indent=2) + '\n'
           (root / 'summary.json').write_text(text)
           print(text)
@@ -114,7 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: neko328-required-gates-28af81e4
+          name: neko328-required-gates-cb37d07e
           path: evidence/
           if-no-files-found: error
           retention-days: 14
