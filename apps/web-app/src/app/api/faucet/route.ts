@@ -21,6 +21,10 @@ import {
   acquireFaucetRateLimit,
   releaseFaucetRateLimit,
 } from "@/lib/faucetRateLimit";
+import {
+  FaucetMintPendingError,
+  submitFaucetMint,
+} from "@/lib/faucetSubmission";
 
 export const dynamic = "force-dynamic";
 
@@ -52,28 +56,7 @@ async function bulkMint(
   const prepared = await sorobanServer.prepareTransaction(transaction);
   prepared.sign(adminKeypair);
 
-  const response = await sorobanServer.sendTransaction(prepared);
-
-  if (response.status === "ERROR") {
-    throw new Error(`Transaction failed: ${response.status}`);
-  }
-
-  if (response.status === "PENDING") {
-    let result = await sorobanServer.getTransaction(response.hash);
-    const maxRetries = 30;
-    let retries = 0;
-    while (result.status === "NOT_FOUND" && retries < maxRetries) {
-      await new Promise((r) => setTimeout(r, 1000));
-      result = await sorobanServer.getTransaction(response.hash);
-      retries++;
-    }
-
-    if (result.status === "FAILED") {
-      throw new Error("Transaction failed on-chain");
-    }
-  }
-
-  return { hash: response.hash };
+  return submitFaucetMint(sorobanServer, prepared);
 }
 
 async function mintTokenLegacy(
@@ -108,34 +91,14 @@ async function mintTokenLegacy(
   const prepared = await sorobanServer.prepareTransaction(transaction);
   prepared.sign(adminKeypair);
 
-  const response = await sorobanServer.sendTransaction(prepared);
-
-  if (response.status === "ERROR") {
-    throw new Error(`Transaction failed: ${response.status}`);
-  }
-
-  if (response.status === "PENDING") {
-    let result = await sorobanServer.getTransaction(response.hash);
-    const maxRetries = 30;
-    let retries = 0;
-    while (result.status === "NOT_FOUND" && retries < maxRetries) {
-      await new Promise((r) => setTimeout(r, 1000));
-      result = await sorobanServer.getTransaction(response.hash);
-      retries++;
-    }
-
-    if (result.status === "FAILED") {
-      throw new Error("Transaction failed on-chain");
-    }
-  }
-
-  return { hash: response.hash };
+  return submitFaucetMint(sorobanServer, prepared);
 }
 
 export async function POST(request: NextRequest) {
   let rateLimitAcquired = false;
   let rateLimitAddress: string | undefined;
   let rateLimitReleaseToken: string | undefined;
+  let mintMaySettle = false;
 
   try {
     const network = clientEnv.stellarNetwork;
@@ -188,6 +151,7 @@ export async function POST(request: NextRequest) {
         address,
         passphrase
       );
+      mintMaySettle = true;
 
       const tokens = getFaucetTokens();
 
@@ -208,6 +172,7 @@ export async function POST(request: NextRequest) {
       success: boolean;
       hash?: string;
       error?: string;
+      pending?: boolean;
     }[] = [];
 
     for (const token of allFaucetTokens) {
@@ -221,31 +186,53 @@ export async function POST(request: NextRequest) {
           token.mintAmount,
           passphrase
         );
+        mintMaySettle = true;
         results.push({ token: token.symbol, success: true, hash });
       } catch (err) {
+        if (err instanceof FaucetMintPendingError) mintMaySettle = true;
         results.push({
           token: token.symbol,
           success: false,
           error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof FaucetMintPendingError
+            ? { pending: true, hash: err.hash }
+            : {}),
         });
       }
     }
 
     const allSucceeded = results.every((r) => r.success);
     const noneSucceeded = results.every((r) => !r.success);
+    const anyPending = results.some((r) => r.pending);
 
-    // Failed mints should not burn the cooldown slot.
-    if (noneSucceeded) {
+    // Release only after every mint definitively failed. An unknown submitted
+    // transaction can still settle and must not admit another faucet request.
+    if (noneSucceeded && !anyPending) {
       await releaseFaucetRateLimit(address, rateLimitReleaseToken);
       rateLimitAcquired = false;
     }
 
     return NextResponse.json(
-      { results, success: allSucceeded },
-      { status: noneSucceeded ? 500 : 200 }
+      {
+        results,
+        success: allSucceeded,
+        ...(anyPending ? { pending: true } : {}),
+      },
+      { status: anyPending ? 202 : noneSucceeded ? 500 : 200 }
     );
   } catch (error) {
-    if (rateLimitAcquired && rateLimitAddress) {
+    if (error instanceof FaucetMintPendingError) {
+      return NextResponse.json(
+        {
+          success: false,
+          pending: true,
+          hash: error.hash,
+          error: error.message,
+        },
+        { status: 202 }
+      );
+    }
+    if (rateLimitAcquired && rateLimitAddress && !mintMaySettle) {
       try {
         await releaseFaucetRateLimit(rateLimitAddress, rateLimitReleaseToken);
       } catch {
