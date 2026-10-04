@@ -43,6 +43,7 @@ jobs:
           npm list --prefix .ci-neko-deps --json > artifacts/faucet-shared-redis/dependencies.json
       - name: Verify the unchanged product and record image identities
         run: |
+          git fetch --no-tags --depth=1 origin "$PRODUCT_SOURCE_REVISION"
           git diff --exit-code "$PRODUCT_SOURCE_REVISION" HEAD -- apps/web-app/src/lib/faucetRateLimit.ts apps/web-app/src/lib/constants/faucet.ts apps/web-app/src/app/api/faucet/route.ts apps/web-app/src/lib/faucetSubmission.ts
           docker image inspect redis:7.2.5-alpine hiett/serverless-redis-http:latest > artifacts/faucet-shared-redis/images.json
           git rev-parse HEAD > artifacts/faucet-shared-redis/controller.txt
