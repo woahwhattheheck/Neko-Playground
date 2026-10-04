@@ -41,10 +41,18 @@ function isRateLimitDisabled(): boolean {
  * Read at call time so tests can stub env without reloading the module.
  */
 function getRedis(): Redis | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-  const token =
-    process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
-  if (!url || !token) {
+  const upstashUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const kvUrl = process.env.KV_REST_API_URL;
+  const kvToken = process.env.KV_REST_API_TOKEN;
+  const credentials =
+    upstashUrl && upstashToken
+      ? { url: upstashUrl, token: upstashToken }
+      : kvUrl && kvToken
+        ? { url: kvUrl, token: kvToken }
+        : null;
+
+  if (!credentials) {
     if (process.env.NODE_ENV === "production") {
       throw new Error(
         "Faucet rate limiting requires Redis configuration in production"
@@ -52,7 +60,7 @@ function getRedis(): Redis | null {
     }
     return null;
   }
-  return new Redis({ url, token });
+  return new Redis(credentials);
 }
 
 function acquireInMemory(address: string): FaucetRateLimitResult {
