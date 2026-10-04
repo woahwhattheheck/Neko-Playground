@@ -1,2 +1,0 @@
-export const BACKSTOP_WITHDRAWAL_QUEUE_DAYS = 17;
-export const BACKSTOP_TOKEN_DECIMALS = 7;

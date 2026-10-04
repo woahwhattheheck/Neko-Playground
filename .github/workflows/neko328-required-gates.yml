@@ -1,0 +1,130 @@
+name: Neko328 required repository gates
+
+on:
+  push:
+    branches: [test/neko328-required-gates-beacon-20261004]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neko328-required-gates-cd9dcbb
+  cancel-in-progress: false
+
+jobs:
+  required-gates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: source
+        shell: bash
+    env:
+      NEXT_PUBLIC_STELLAR_NETWORK: TESTNET
+      NEXT_PUBLIC_STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+      NEXT_PUBLIC_STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+      NEXT_PUBLIC_STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+    steps:
+      - name: Checkout composed source
+        uses: actions/checkout@v4
+        with:
+          ref: cd9dcbb10bb4c1e3d8b2d4865d58f5143c57b670
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Record source and runtime
+        run: |
+          mkdir -p ../evidence
+          git rev-parse HEAD > ../evidence/source-sha.txt
+          git rev-parse HEAD^{tree} > ../evidence/source-tree.txt
+          git status --porcelain=v1 > ../evidence/source-status-before.txt
+          git hash-object package.json package-lock.json apps/web-app/package.json apps/web-app/vitest.config.ts apps/web-app/tsconfig.json > ../evidence/input-blobs.txt
+          node --version > ../evidence/node-version.txt
+          npm --version > ../evidence/npm-version.txt
+          uname -a > ../evidence/platform.txt
+
+      - name: Install locked dependencies
+        id: install
+        continue-on-error: true
+        run: |
+          set +e
+          npm ci 2>&1 | tee ../evidence/install.log
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > ../evidence/install.exit
+          exit "$status"
+
+      - name: Required lint
+        id: lint
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set +e
+          npm run lint 2>&1 | tee ../evidence/lint.log
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > ../evidence/lint.exit
+          exit "$status"
+
+      - name: Required typecheck
+        id: typecheck
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set +e
+          npm run typecheck 2>&1 | tee ../evidence/typecheck.log
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > ../evidence/typecheck.exit
+          exit "$status"
+
+      - name: Required test
+        id: test
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set +e
+          npm run test 2>&1 | tee ../evidence/test.log
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > ../evidence/test.exit
+          exit "$status"
+
+      - name: Record all outcomes
+        if: always()
+        run: |
+          mkdir -p ../evidence
+          git status --porcelain=v1 > ../evidence/source-status-after.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('../evidence')
+          statuses = {name: int((root / (name + '.exit')).read_text()) if (root / (name + '.exit')).exists() else None for name in ('install', 'lint', 'typecheck', 'test')}
+          result = {'source': 'cd9dcbb10bb4c1e3d8b2d4865d58f5143c57b670', 'exit_codes': statuses, 'all_passed': all(value == 0 for value in statuses.values())}
+          text = json.dumps(result, indent=2) + '\n'
+          (root / 'summary.json').write_text(text)
+          print(text)
+          PY
+
+      - name: Preserve raw acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neko328-required-gates-cd9dcbb
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require all three gates
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('../evidence/summary.json').read_text())
+          raise SystemExit(0 if result['all_passed'] else 1)
+          PY
