@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
+import { readFileSync } from "node:fs";
 
 vi.mock("@/lib/env.client", () => ({
   clientEnv: {
@@ -45,7 +46,8 @@ vi.mock("@/lib/vault/investSteps", () => ({
   buildVaultClient: buildVaultClientMock,
 }));
 
-import { POST } from "../invest/route";
+import { GET as GETStatus, POST } from "../invest/route";
+import { GET as GETCron } from "../invest/cron/route";
 import { LeaseNotAcquiredError } from "@/lib/jobs/errors";
 
 const CRON_SECRET = "test-cron-secret";
@@ -58,13 +60,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
 });
-
-function postRequest(headers: Record<string, string> = {}) {
-  return new NextRequest("http://localhost/api/vault/invest", {
-    method: "POST",
-    headers,
-  });
-}
 
 function completedRun() {
   return {
@@ -80,9 +75,16 @@ function completedRun() {
   };
 }
 
-describe("POST /api/vault/invest", () => {
+describe.each([
+  { method: "POST", path: "/api/vault/invest", invoke: POST },
+  { method: "GET", path: "/api/vault/invest/cron", invoke: GETCron },
+])("$method $path", ({ method, path, invoke }) => {
+  function postRequest(headers: Record<string, string> = {}) {
+    return new NextRequest("http://localhost" + path, { method, headers });
+  }
+
   it("returns 401 when Authorization is missing", async () => {
-    const res = await POST(postRequest());
+    const res = await invoke(postRequest());
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "Unauthorized" });
     expect(runOrResumeMock).not.toHaveBeenCalled();
@@ -90,7 +92,7 @@ describe("POST /api/vault/invest", () => {
   });
 
   it("returns 401 when the Bearer token is wrong", async () => {
-    const res = await POST(
+    const res = await invoke(
       postRequest({ Authorization: "Bearer wrong-secret" })
     );
     expect(res.status).toBe(401);
@@ -101,7 +103,7 @@ describe("POST /api/vault/invest", () => {
     vi.stubEnv("CRON_SECRET", "");
     delete process.env.CRON_SECRET;
 
-    const res = await POST(
+    const res = await invoke(
       postRequest({ Authorization: `Bearer ${CRON_SECRET}` })
     );
     expect(res.status).toBe(401);
@@ -115,13 +117,13 @@ describe("POST /api/vault/invest", () => {
     });
     runOrResumeMock.mockResolvedValue(completedRun());
 
-    const res = await POST(postRequest({ "x-vercel-cron": "1" }));
+    const res = await invoke(postRequest({ "x-vercel-cron": "1" }));
     expect(res.status).toBe(401);
     expect(runOrResumeMock).not.toHaveBeenCalled();
   });
 
   it("returns 401 when x-vercel-cron is set alongside an invalid Bearer", async () => {
-    const res = await POST(
+    const res = await invoke(
       postRequest({
         "x-vercel-cron": "1",
         Authorization: "Bearer not-the-secret",
@@ -136,7 +138,7 @@ describe("POST /api/vault/invest", () => {
       canInvest: false,
       cooldownRemaining: 42,
     });
-    const res = await POST(
+    const res = await invoke(
       postRequest({ Authorization: `Bearer ${CRON_SECRET}` })
     );
     expect(res.status).toBe(429);
@@ -150,7 +152,7 @@ describe("POST /api/vault/invest", () => {
     });
     runOrResumeMock.mockResolvedValue(completedRun());
 
-    const res = await POST(
+    const res = await invoke(
       postRequest({ Authorization: `Bearer ${CRON_SECRET}` })
     );
     expect(res.status).toBe(200);
@@ -168,7 +170,7 @@ describe("POST /api/vault/invest", () => {
       cooldownRemaining: 17,
     });
 
-    const res = await POST(
+    const res = await invoke(
       postRequest({
         "x-vercel-cron": "1",
         Authorization: `Bearer ${CRON_SECRET}`,
@@ -187,9 +189,56 @@ describe("POST /api/vault/invest", () => {
       new LeaseNotAcquiredError("vault-invest", "singleton")
     );
 
-    const res = await POST(
+    const res = await invoke(
       postRequest({ Authorization: `Bearer ${CRON_SECRET}` })
     );
     expect(res.status).toBe(409);
   });
 });
+
+it("keeps the public status GET read-only", async () => {
+  ledgerStatusMock.mockResolvedValue({
+    canInvest: true,
+    cooldownRemaining: 0,
+  });
+  const res = await GETStatus();
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ idle: 0, total: 0 });
+  expect(buildVaultClientMock).toHaveBeenCalledTimes(1);
+  expect(runOrResumeMock).not.toHaveBeenCalled();
+});
+
+it("runs an investment through the configured cron GET path", async () => {
+  const config = JSON.parse(
+    readFileSync(
+      new URL("../../../../../../../vercel.json", import.meta.url),
+      "utf8"
+    )
+  ) as { crons: { path: string; schedule: string }[] };
+  expect(config.crons).toHaveLength(1);
+  const cron = config.crons[0];
+  expect(cron.schedule).toBe("0 2 * * *");
+
+  const handlers: Record<string, typeof POST> = {
+    "/api/vault/invest": GETStatus,
+    "/api/vault/invest/cron": GETCron,
+  };
+  const handler = handlers[cron.path];
+  expect(handler).toBeDefined();
+  ledgerStatusMock.mockResolvedValue({
+    canInvest: true,
+    cooldownRemaining: 0,
+  });
+  runOrResumeMock.mockResolvedValue(completedRun());
+  const res = await handler(
+    new NextRequest("http://localhost" + cron.path, {
+      method: "GET",
+      headers: { Authorization: "Bearer " + CRON_SECRET },
+    })
+  );
+  expect(res.status).toBe(200);
+  expect(runOrResumeMock).toHaveBeenCalledTimes(1);
+  expect(await res.json()).toMatchObject({ success: true });
+  expect(buildVaultClientMock).not.toHaveBeenCalled();
+});
+
