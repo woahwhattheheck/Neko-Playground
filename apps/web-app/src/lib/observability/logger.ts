@@ -27,7 +27,6 @@ const levelOrder: Record<LogLevel, number> = {
 
 let minLevel: LogLevel = "info";
 let sink: Sink = (line) => {
-  // eslint-disable-next-line no-console
   console.error(line);
 };
 
@@ -42,7 +41,6 @@ export function configureLogger(options: {
 export function resetLoggerForTests(): void {
   minLevel = "info";
   sink = (line) => {
-    // eslint-disable-next-line no-console
     console.error(line);
   };
 }
