@@ -67,6 +67,17 @@ function write(level: LogLevel, msg: string, fields: LogFields = {}): void {
   sink(JSON.stringify(payload));
 }
 
+function writeChild(
+  level: LogLevel,
+  msg: string,
+  base: LogFields,
+  fields?: LogFields
+): void {
+  // Filter before reading or copying child context for a suppressed level.
+  if (levelOrder[level] < levelOrder[minLevel]) return;
+  write(level, msg, { ...base, ...fields });
+}
+
 export const logger = {
   debug: (msg: string, fields?: LogFields) => write("debug", msg, fields),
   info: (msg: string, fields?: LogFields) => write("info", msg, fields),
@@ -75,13 +86,13 @@ export const logger = {
   child(base: LogFields) {
     return {
       debug: (msg: string, fields?: LogFields) =>
-        write("debug", msg, { ...base, ...fields }),
+        writeChild("debug", msg, base, fields),
       info: (msg: string, fields?: LogFields) =>
-        write("info", msg, { ...base, ...fields }),
+        writeChild("info", msg, base, fields),
       warn: (msg: string, fields?: LogFields) =>
-        write("warn", msg, { ...base, ...fields }),
+        writeChild("warn", msg, base, fields),
       error: (msg: string, fields?: LogFields) =>
-        write("error", msg, { ...base, ...fields }),
+        writeChild("error", msg, base, fields),
     };
   },
 };
