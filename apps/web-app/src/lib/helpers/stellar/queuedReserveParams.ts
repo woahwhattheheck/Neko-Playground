@@ -28,45 +28,58 @@ export async function getQueuedReserveParams(
   contractId: string,
   assets: readonly string[]
 ): Promise<QueuedReserveParamState[]> {
-  const server = getSorobanServer(rpcUrl);
-  const results = await Promise.all(
-    Array.from(new Set(assets)).map(async (asset) => {
-      const key = xdr.LedgerKey.contractData(
-        new xdr.LedgerKeyContractData({
-          contract: new Contract(contractId).address().toScAddress(),
-          key: queuedReserveConfigKey(asset),
-          durability: xdr.ContractDataDurability.temporary(),
-        })
-      );
+  const uniqueAssets = Array.from(new Set(assets));
+  if (uniqueAssets.length === 0) return [];
 
-      // SDK 14.4.3 getContractData turns every lookup failure into code 404.
-      // Only a successful empty ledger lookup means this asset has no queue.
-      const { entries } = await server.getLedgerEntries(key);
-      if (!Array.isArray(entries)) {
-        throw new Error("Queued reserve lookup did not return ledger entries");
-      }
-      if (entries.length === 0) return null;
-      if (
-        entries.length !== 1 ||
-        entries[0].key.toXDR("base64") !== key.toXDR("base64")
-      ) {
+  const server = getSorobanServer(rpcUrl);
+  const contract = new Contract(contractId).address().toScAddress();
+  const requests = uniqueAssets.map((asset) => ({
+    asset,
+    key: xdr.LedgerKey.contractData(
+      new xdr.LedgerKeyContractData({
+        contract,
+        key: queuedReserveConfigKey(asset),
+        durability: xdr.ContractDataDurability.temporary(),
+      })
+    ),
+  }));
+  const results: QueuedReserveParamState[] = [];
+
+  // Stellar RPC accepts at most 200 ledger keys per request. Keep larger pools
+  // sequential rather than recreating the old per-asset request burst.
+  for (let offset = 0; offset < requests.length; offset += 200) {
+    const batch = requests.slice(offset, offset + 200);
+    const pending = new Map(
+      batch.map(({ asset, key }) => [key.toXDR("base64"), asset])
+    );
+    // SDK 14.4.3 getContractData turns every lookup failure into code 404.
+    // Only keys absent from a successful ledger lookup mean no queue.
+    const { entries } = await server.getLedgerEntries(
+      ...batch.map(({ key }) => key)
+    );
+    if (!Array.isArray(entries)) {
+      throw new Error("Queued reserve lookup did not return ledger entries");
+    }
+    for (const entry of entries) {
+      const encodedKey = entry.key.toXDR("base64");
+      const asset = pending.get(encodedKey);
+      if (asset === undefined) {
         throw new Error(
-          `Queued reserve lookup returned an unexpected key for ${asset}`
+          "Queued reserve lookup returned an unexpected or duplicate key"
         );
       }
+      pending.delete(encodedKey);
 
-      const config = scValToNative(entries[0].val.contractData().val());
+      const config = scValToNative(entry.val.contractData().val());
       const unlockTime = getUnlockTime(config);
       if (unlockTime === null) {
         throw new Error(
           `Queued reserve config for ${asset} did not contain unlock_time`
         );
       }
-      return { asset, unlockTime };
-    })
-  );
+      results.push({ asset, unlockTime });
+    }
+  }
 
-  return results
-    .filter((entry): entry is QueuedReserveParamState => entry !== null)
-    .sort((a, b) => a.asset.localeCompare(b.asset));
+  return results.sort((a, b) => a.asset.localeCompare(b.asset));
 }
