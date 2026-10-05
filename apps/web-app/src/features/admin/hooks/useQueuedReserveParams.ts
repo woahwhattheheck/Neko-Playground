@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   getQueuedReserveParams,
   type QueuedReserveParamState,
-} from "@/lib/helpers/stellar/lending";
+} from "@/lib/helpers/stellar/queuedReserveParams";
 
 export type QueuedReserveParamView = QueuedReserveParamState & {
   status: "locked" | "ready";
@@ -16,10 +16,13 @@ export type QueuedReserveParamView = QueuedReserveParamState & {
  * Tracks pending reserve-parameter changes for one lending pool and decorates
  * them with a live locked/ready countdown for the admin UI.
  */
-export function useQueuedReserveParams(contractId: string) {
+export function useQueuedReserveParams(
+  contractId: string,
+  assets: readonly string[]
+) {
   const query = useQuery({
-    queryKey: ["queued-reserve-params", contractId],
-    queryFn: () => getQueuedReserveParams(contractId),
+    queryKey: ["queued-reserve-params", contractId, assets],
+    queryFn: () => getQueuedReserveParams(contractId, assets),
     enabled: Boolean(contractId),
     staleTime: 15_000,
     refetchInterval: 30_000,
