@@ -1,4 +1,4 @@
-import { rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Contract, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { rpcUrl } from "@/lib/constants/network";
 import { getSorobanServer } from "./sorobanServer";
 
@@ -24,11 +24,6 @@ function getUnlockTime(value: unknown): number | null {
   return Number.isSafeInteger(unlockTime) && unlockTime > 0 ? unlockTime : null;
 }
 
-function isMissingContractData(error: unknown): boolean {
-  if (!error || typeof error !== "object" || !("code" in error)) return false;
-  return Number((error as { code?: unknown }).code) === 404;
-}
-
 export async function getQueuedReserveParams(
   contractId: string,
   assets: readonly string[]
@@ -36,24 +31,38 @@ export async function getQueuedReserveParams(
   const server = getSorobanServer(rpcUrl);
   const results = await Promise.all(
     Array.from(new Set(assets)).map(async (asset) => {
-      try {
-        const entry = await server.getContractData(
-          contractId,
-          queuedReserveConfigKey(asset),
-          rpc.Durability.Temporary
-        );
-        const config = scValToNative(entry.val.contractData().val());
-        const unlockTime = getUnlockTime(config);
-        if (unlockTime === null) {
-          throw new Error(
-            `Queued reserve config for ${asset} did not contain unlock_time`
-          );
-        }
-        return { asset, unlockTime };
-      } catch (error) {
-        if (isMissingContractData(error)) return null;
-        throw error;
+      const key = xdr.LedgerKey.contractData(
+        new xdr.LedgerKeyContractData({
+          contract: new Contract(contractId).address().toScAddress(),
+          key: queuedReserveConfigKey(asset),
+          durability: xdr.ContractDataDurability.temporary(),
+        })
+      );
+
+      // SDK 14.4.3 getContractData turns every lookup failure into code 404.
+      // Only a successful empty ledger lookup means this asset has no queue.
+      const { entries } = await server.getLedgerEntries(key);
+      if (!Array.isArray(entries)) {
+        throw new Error("Queued reserve lookup did not return ledger entries");
       }
+      if (entries.length === 0) return null;
+      if (
+        entries.length !== 1 ||
+        entries[0].key.toXDR("base64") !== key.toXDR("base64")
+      ) {
+        throw new Error(
+          `Queued reserve lookup returned an unexpected key for ${asset}`
+        );
+      }
+
+      const config = scValToNative(entries[0].val.contractData().val());
+      const unlockTime = getUnlockTime(config);
+      if (unlockTime === null) {
+        throw new Error(
+          `Queued reserve config for ${asset} did not contain unlock_time`
+        );
+      }
+      return { asset, unlockTime };
     })
   );
 
