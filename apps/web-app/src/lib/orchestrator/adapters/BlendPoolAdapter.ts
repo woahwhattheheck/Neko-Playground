@@ -12,6 +12,7 @@ import { TransactionBuilder, xdr, Horizon } from "@stellar/stellar-sdk";
 
 import { rpcUrl, networkPassphrase, horizonUrl } from "@/lib/constants/network";
 import { getSorobanServer } from "@/lib/helpers/stellar/sorobanServer";
+import { reportAppError } from "@/lib/errors/normalizeAppError";
 
 import type { BasePoolAdapter } from "../types/adapter.types";
 import type {
@@ -245,7 +246,8 @@ export class BlendPoolAdapter implements BasePoolAdapter {
           claimedTokens,
         },
       };
-    } catch {
+    } catch (error) {
+      reportAppError("BlendPoolAdapter.getUserPosition", error);
       return emptyPosition(fullId);
     }
   }
