@@ -58,7 +58,7 @@ export default function InterestRateParamsForm() {
 
   const pool = POOLS.find((p) => p.id === poolId) ?? POOLS[0];
   const assets = pool.assets;
-  const queuedReserveParams = useQueuedReserveParams(pool.contractId);
+  const queuedReserveParams = useQueuedReserveParams(pool.contractId, assets);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -425,7 +425,7 @@ export default function InterestRateParamsForm() {
 
           {queuedReserveParams.isError ? (
             <div className="rounded-xl border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-200">
-              Pending state could not be loaded from contract events. Refresh
+              Pending state could not be loaded from contract storage. Refresh
               before applying or cancelling a change.
             </div>
           ) : queuedReserveParams.isLoading ? (
