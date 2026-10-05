@@ -6,6 +6,7 @@ import {
 } from "@/lib/constants/network";
 import { getAvailableTokens } from "@/lib/helpers/stellar/soroswap";
 import { fromSmallestUnit } from "@/lib/helpers/tokenUtils";
+import { reportAppError } from "@/lib/errors/normalizeAppError";
 import {
   depositToPool,
   withdrawFromPool,
@@ -92,7 +93,9 @@ function unwrapResult(value: unknown): bigint {
   if (typeof obj.unwrap === "function") {
     try {
       return BigInt(obj.unwrap());
-    } catch {}
+    } catch (error) {
+      reportAppError("NekoLendingAdapter.unwrapResult", error);
+    }
   }
 
   if (obj.tag === "Ok" && Array.isArray(obj.values) && obj.values.length > 0) {
@@ -209,7 +212,8 @@ export class NekoLendingAdapter implements BasePoolAdapter {
       try {
         const info = await this.getPoolInfo(code);
         pools.push(info);
-      } catch {
+      } catch (error) {
+        reportAppError(`NekoLendingAdapter.listPools.${code}`, error);
         continue;
       }
     }
@@ -252,7 +256,11 @@ export class NekoLendingAdapter implements BasePoolAdapter {
         limits: { withdraw: raw },
         metadata: { bTokenBalance: raw.toString() },
       };
-    } catch {
+    } catch (error) {
+      reportAppError(
+        `NekoLendingAdapter.getUserPosition.${assetCode}`,
+        error
+      );
       return emptyPosition(`neko:${assetCode}`);
     }
   }
