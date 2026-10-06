@@ -91,7 +91,9 @@ export class BlendPoolAdapter implements BasePoolAdapter {
       let tokenMeta: TokenMetadata | undefined;
       try {
         tokenMeta = await TokenMetadata.load(network, assetAddress);
-      } catch {}
+      } catch (error) {
+        reportAppError("BlendPoolAdapter.getPoolInfo.tokenMetadata", error);
+      }
 
       const statusMap: Record<number, "active" | "frozen" | "on_ice"> = {
         0: "active",
@@ -144,7 +146,12 @@ export class BlendPoolAdapter implements BasePoolAdapter {
         let tokenMeta: TokenMetadata | undefined;
         try {
           tokenMeta = await TokenMetadata.load(network, assetAddress);
-        } catch {}
+        } catch (error) {
+          reportAppError(
+            `BlendPoolAdapter.listPools.${assetAddress}.tokenMetadata`,
+            error
+          );
+        }
 
         const statusMap: Record<number, "active" | "frozen" | "on_ice"> = {
           0: "active",
