@@ -191,7 +191,7 @@ export class BlendPoolAdapter implements BasePoolAdapter {
 
       return pools;
     } catch (error) {
-      console.error("[BlendPoolAdapter] listPools failed:", error);
+      reportAppError("BlendPoolAdapter.listPools", error);
       return [];
     }
   }
