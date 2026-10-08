@@ -152,8 +152,20 @@ export class NekoLendingAdapter implements BasePoolAdapter {
         client.get_pool_balance({ asset: assetCode }, { simulate: true }),
         client
           .get_interest_rate({ asset: assetCode }, { simulate: true })
-          .catch(() => null),
-        client.get_pool_state({ simulate: true }).catch(() => null),
+          .catch((error) => {
+            reportAppError(
+              `NekoLendingAdapter.getPoolInfo.${assetCode}.interestRate`,
+              error
+            );
+            return null;
+          }),
+        client.get_pool_state({ simulate: true }).catch((error) => {
+          reportAppError(
+            `NekoLendingAdapter.getPoolInfo.${assetCode}.poolState`,
+            error
+          );
+          return null;
+        }),
       ]);
 
       const balance =
