@@ -1,9 +1,10 @@
+import { AdapterError } from "../orchestrator/types/errors";
+
 export const DEFAULT_USER_ERROR_MESSAGE =
   "Something went wrong. Please try again.";
 
 type ErrorLike = {
   message?: unknown;
-  userMessage?: unknown;
 };
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -17,23 +18,37 @@ function nonEmptyString(value: unknown): string | undefined {
  * safe to show in UI. AdapterError already carries a curated userMessage, so
  * preserve it instead of exposing its diagnostic wrapper.
  */
+function getCuratedAdapterMessage(error: unknown): string | undefined {
+  try {
+    return error instanceof AdapterError
+      ? nonEmptyString(error.userMessage)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getRawErrorMessage(error: unknown): string | undefined {
+  try {
+    if (error instanceof Error) return nonEmptyString(error.message);
+    if (typeof error === "string") return nonEmptyString(error);
+    if (error && typeof error === "object") {
+      return nonEmptyString((error as ErrorLike).message);
+    }
+  } catch {
+    // Hostile accessors or revoked proxies are unknown failures, not UI copy.
+  }
+  return undefined;
+}
+
 export function getUserFacingErrorMessage(
   error: unknown,
   fallback: string = DEFAULT_USER_ERROR_MESSAGE
 ): string {
-  if (error && typeof error === "object") {
-    const explicit = nonEmptyString((error as ErrorLike).userMessage);
-    if (explicit) return explicit;
-  }
+  const curated = getCuratedAdapterMessage(error);
+  if (curated) return curated;
 
-  const raw =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : error && typeof error === "object"
-          ? nonEmptyString((error as ErrorLike).message)
-          : undefined;
+  const raw = getRawErrorMessage(error);
 
   if (!raw) return fallback;
 
