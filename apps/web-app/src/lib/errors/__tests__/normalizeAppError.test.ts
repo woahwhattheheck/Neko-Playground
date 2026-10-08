@@ -4,19 +4,46 @@ import {
   getUserFacingErrorMessage,
   reportAppError,
 } from "../normalizeAppError";
+import { AdapterError } from "../../orchestrator/types/errors";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("getUserFacingErrorMessage", () => {
-  it("preserves an AdapterError-style curated userMessage", () => {
+  it("preserves the curated userMessage from a real AdapterError", () => {
+    const error = new AdapterError(
+      "blend",
+      "deposit",
+      new Error("simulation failed")
+    );
+
+    expect(getUserFacingErrorMessage(error)).toBe(error.userMessage);
+  });
+
+  it("does not trust a structurally similar arbitrary userMessage", () => {
     expect(
       getUserFacingErrorMessage({
-        message: "[blend] deposit failed: internal rpc detail",
-        userMessage: "Transaction simulation failed.",
+        message: "opaque provider failure",
+        userMessage: "internal rpc detail: account=secret",
       })
-    ).toBe("Transaction simulation failed.");
+    ).toBe(DEFAULT_USER_ERROR_MESSAGE);
+  });
+
+  it("does not execute hostile error accessors", () => {
+    const hostile = {};
+    Object.defineProperty(hostile, "userMessage", {
+      get: () => {
+        throw new Error("userMessage getter executed");
+      },
+    });
+    Object.defineProperty(hostile, "message", {
+      get: () => {
+        throw new Error("message getter executed");
+      },
+    });
+
+    expect(getUserFacingErrorMessage(hostile)).toBe(DEFAULT_USER_ERROR_MESSAGE);
   });
 
   it("normalizes common wallet rejection and network failures", () => {
